@@ -17,7 +17,7 @@ This repository contains our final project for COMP 560. Our aim is to train a c
 4. Run `model_training.ipynb` to reproduce model training and evaluation results.  
 5. Execute `mainapp.py` to launch the streamlit application using the trained model.
 
-## Machine Learning Content Utilize 
+## Machine Learning Content Utilized
 We utilize various classifier algorithms to explore which kind of model works best for this kind of data. The models we use are as follows: 
 - Logistic Regression 
 - Ridge Classification with Cross Validated Parameters (sklearn's Ridge Regression for Classification)
