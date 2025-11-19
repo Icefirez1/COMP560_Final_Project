@@ -4,14 +4,14 @@ import pandas as pd
 import pickle
 from dotenv import load_dotenv
 
-# Load the specific environment file
+# load the specific environment file
 load_dotenv('.env.local')
 
 API_KEY = os.getenv("LEAGUE_API_KEY")
-print(f"✓ API Key loaded: {API_KEY[:10]}..." if API_KEY else "✗ API Key not found!")
-REGION_ROUTING = "americas"   # americas / europe / asia
+print(f"loaded api key: {API_KEY[:10]}..." if API_KEY else "no api key detected :(")
+REGION_ROUTING = "americas"   # switch between americas / europe / asia
 
-# Load the trained model and rank labels
+# load the trained model and preset rank labels
 MODEL = None
 RANKS = ["Unranked", "Iron", "Bronze", "Silver", "Gold", "Platinum", 
          "Emerald", "Diamond", "Master", "Grandmaster", "Challenger"]
@@ -23,17 +23,15 @@ def load_model():
         MODEL = pickle.load(open("models/vanilla_tree.sav", "rb"))
     return MODEL
 
-# Encoding mappings for categorical variables (consistent with training data)
-# These MUST match the exact order from pd.factorize() during training!
-# Discovered by running check_encodings.py
+# encoding mappings for categorical variables (consistent with training data)
 LANE_ENCODING = {
     'BOTTOM': 0,
-    'SUPPORT': 1,  # Old API lane value
+    'SUPPORT': 1,  
     'NONE': 2,
     'JUNGLE': 3,
     'TOP': 4,
     'MIDDLE': 5,
-    'UTILITY': 1   # Maps to SUPPORT for compatibility
+    'UTILITY': 1   # SUPPORT
 }
 ROLE_ENCODING = {
     'SUPPORT': 0,
@@ -42,9 +40,9 @@ ROLE_ENCODING = {
     'JUNGLE': 3,
     'TOP': 4,
     'MIDDLE': 5,
-    'SOLO': 4,     # Maps to TOP for compatibility
-    'DUO': 1,      # Maps to ADC for compatibility  
-    'CARRY': 1     # Maps to ADC for compatibility
+    'SOLO': 4,     # TOP
+    'DUO': 1,      # ADC 
+    'CARRY': 1     # ADC
 }
 GAME_PHASE_ENCODING = {
     'Mid': 0,
@@ -88,10 +86,8 @@ def extract_player_stats(match_data, username=None):
     player_stats_list = []
     
     for participant in participants:
-        # If username is specified, skip players that don't match
         if username and participant['riotIdGameName'].lower() != username.lower():
             continue
-        # Basic stats
         stats = {
             'MinionsKilled': participant['totalMinionsKilled'],
             'DmgDealt': participant['totalDamageDealtToChampions'],
@@ -99,45 +95,33 @@ def extract_player_stats(match_data, username=None):
             'TurretDmgDealt': participant['damageDealtToTurrets'],
             'TotalGold': participant['goldEarned'],
             'Win': 1 if participant['win'] else 0,
-            
-            # Items
             'item1': participant['item0'],
             'item2': participant['item1'],
             'item3': participant['item2'],
             'item4': participant['item3'],
             'item5': participant['item4'],
             'item6': participant['item5'],
-            
-            # KDA
             'kills': participant['kills'],
             'deaths': participant['deaths'],
             'assists': participant['assists'],
-            
-            # Runes (Perks)
             'PrimaryKeyStone': participant['perks']['styles'][0]['selections'][0]['perk'],
             'PrimarySlot1': participant['perks']['styles'][0]['selections'][1]['perk'],
             'PrimarySlot2': participant['perks']['styles'][0]['selections'][2]['perk'],
             'PrimarySlot3': participant['perks']['styles'][0]['selections'][3]['perk'],
             'SecondarySlot1': participant['perks']['styles'][1]['selections'][0]['perk'],
             'SecondarySlot2': participant['perks']['styles'][1]['selections'][1]['perk'],
-            
-            # Summoner Spells
             'SummonerSpell1': participant['summoner1Id'],
             'SummonerSpell2': participant['summoner2Id'],
-            
-            # Champion mastery and objectives
-            'CurrentMasteryPoints': participant.get('championPoints', 0),  # Not always available
+            'CurrentMasteryPoints': participant.get('championPoints', 0),
             'DragonKills': participant.get('dragonKills', 0),
             'BaronKills': participant.get('baronKills', 0),
             'visionScore': participant['visionScore'],
-            
-            # IDs
-            'SummonerMatchId': 0,  # Placeholder
+            'SummonerMatchId': 0,
             'ChampionFk': participant['championId'],
-            'SummonerFk': 0,  # Placeholder
+            'SummonerFk': 0,
             'GameDuration': game_duration_seconds,
             
-            # Derived features
+            # features engineered from the data analysis ipynb, need to do manually here
             'KDA': (participant['kills'] + participant['assists']) / max(participant['deaths'], 1),
             'GameDurationMin': game_duration_min,
             'GoldPerMin': participant['goldEarned'] / game_duration_min,
@@ -149,13 +133,10 @@ def extract_player_stats(match_data, username=None):
             'ItemCount': sum([1 for i in range(6) if participant[f'item{i}'] != 0]),
             'ObjectiveParticipation': participant.get('dragonKills', 0) + participant.get('baronKills', 0),
             
-            # Champion and position
             'ChampionId': participant['championId'],
             'Lane': participant['lane'],
             'Role': participant['role'],
             'GamePhase': 'Early' if game_duration_min < 20 else ('Mid' if game_duration_min < 35 else 'Late'),
-            
-            # Additional info (not for model)
             'summonerName': participant['riotIdGameName'],
             'championName': participant['championName'],
         }
@@ -164,18 +145,10 @@ def extract_player_stats(match_data, username=None):
     
     df = pd.DataFrame(player_stats_list)
     
-    # Encode categorical variables for model compatibility
-    df['Lane'] = df['Lane'].map(LANE_ENCODING).fillna(5)  # Default to 5 (NONE) if unknown
-    df['Role'] = df['Role'].map(ROLE_ENCODING).fillna(1)  # Default to 1 (NONE) if unknown
-    df['GamePhase'] = df['GamePhase'].map(GAME_PHASE_ENCODING).fillna(0)  # Default to 0 (Early)
-    
-    # If username was specified but not found
-    if username and df.empty:
-        print(f"⚠ Warning: Player '{username}' not found in this match.")
-        print("Available players:")
-        for p in participants:
-            print(f"  - {p['riotIdGameName']}")
-    
+    #fill null vals
+    df['Lane'] = df['Lane'].map(LANE_ENCODING).fillna(5)
+    df['Role'] = df['Role'].map(ROLE_ENCODING).fillna(1)
+    df['GamePhase'] = df['GamePhase'].map(GAME_PHASE_ENCODING).fillna(0)
     return df
 
 
@@ -190,7 +163,6 @@ def prepare_for_model(df):
     Returns:
         DataFrame ready for model.predict()
     """
-    # Columns expected by the model (45 features) - matching model training order
     model_columns = [
         'MinionsKilled', 'DmgDealt', 'DmgTaken', 'TurretDmgDealt', 'TotalGold', 'Win',
         'item1', 'item2', 'item3', 'item4', 'item5', 'item6',
@@ -205,7 +177,6 @@ def prepare_for_model(df):
         'ChampionId', 'Lane', 'Role', 'GamePhase'
     ]
     
-    # Select only the model columns
     return df[model_columns].copy()
 
 
@@ -243,27 +214,20 @@ def predict_all_players(match_id):
     Returns:
         DataFrame with player info and predictions
     """
-    # Get match data
     match_data = get_match_data(match_id)
     
     if not match_data:
         return None
     
-    # Extract all player stats
     all_players = extract_player_stats(match_data)
     
     if all_players.empty:
         return None
     
-    # Prepare features for model
     model_features = prepare_for_model(all_players)
-    
-    # Load model and make predictions
     model = load_model()
     predictions = model.predict(model_features)
     predicted_ranks = [RANKS[pred] for pred in predictions]
-    
-    # Add predictions to dataframe
     all_players['PredictedRank'] = predicted_ranks
     all_players['PredictedRankId'] = predictions
     
@@ -284,12 +248,9 @@ def display_predictions(players_df):
     print("RANK PREDICTIONS FOR ALL PLAYERS")
     print("=" * 100)
     
-    # Separate by team
     blue_team = players_df[players_df['Win'] == 0].copy()
     red_team = players_df[players_df['Win'] == 1].copy()
-    
-    # Display Blue Team
-    print("\n🔵 BLUE TEAM (Lost)")
+    print("\nBLUE TEAM (set to losing team)")
     print("-" * 100)
     print(f"{'Player':<20} {'Champion':<12} {'Lane':<8} {'KDA':<12} {'CS':<6} {'Gold':<7} {'Predicted Rank':<15}")
     print("-" * 100)
@@ -303,8 +264,7 @@ def display_predictions(players_df):
         print(f"{player['summonerName']:<20} {player['championName']:<12} {lane_name:<8} "
               f"{kda_str:<12} {cs:<6} {gold:<7} {player['PredictedRank']:<15}")
     
-    # Display Red Team
-    print("\n🔴 RED TEAM (Won)")
+    print("\nRED TEAM (set to winning team)")
     print("-" * 100)
     print(f"{'Player':<20} {'Champion':<12} {'Lane':<8} {'KDA':<12} {'CS':<6} {'Gold':<7} {'Predicted Rank':<15}")
     print("-" * 100)
@@ -318,7 +278,7 @@ def display_predictions(players_df):
         print(f"{player['summonerName']:<20} {player['championName']:<12} {lane_name:<8} "
               f"{kda_str:<12} {cs:<6} {gold:<7} {player['PredictedRank']:<15}")
     
-    # Summary statistics
+    # display predictions
     print("\n" + "=" * 100)
     print("RANK DISTRIBUTION")
     print("=" * 100)
@@ -348,37 +308,25 @@ def save_predictions(players_df, filename='match_predictions.csv'):
     if players_df is None or players_df.empty:
         return
     
-    # Select relevant columns
     output_df = players_df[[
         'summonerName', 'championName', 'kills', 'deaths', 'assists',
         'MinionsKilled', 'TotalGold', 'Win', 'KDA', 'PredictedRank', 'PredictedRankId'
     ]].copy()
     
     output_df.to_csv(filename, index=False)
-    print(f"\n✓ Predictions saved to: {filename}")
+    print(f"\n Predictions saved at: {filename}")
 
 
-# Example usage
+# Example (for predictions on a give match)
 if __name__ == "__main__":
     match_id = "NA1_5416214402"
     
-    print("=" * 100)
-    print("LEAGUE OF LEGENDS RANK PREDICTOR")
-    print("=" * 100)
-    
-    # Predict ranks for all players
+    print("predictions")
     print(f"\nFetching match data for: {match_id}")
     results = predict_all_players(match_id)
     
     if results is not None:
-        # Display results
         display_predictions(results)
-        
-        # Save to file
         save_predictions(results, 'data/match_predictions.csv')
-        
-        print("\n" + "=" * 100)
-        print("✓ Analysis complete!")
-        print("=" * 100)
     else:
-        print("❌ Failed to fetch or process match data")
+        print("Failed to fetch or process data")
