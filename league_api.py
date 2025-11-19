@@ -244,17 +244,13 @@ def display_predictions(players_df):
     if players_df is None or players_df.empty:
         return
     
-    print("\n" + "=" * 100)
-    print("RANK PREDICTIONS FOR ALL PLAYERS")
-    print("=" * 100)
+    print("Player Rank Predictions:")
     
     blue_team = players_df[players_df['Win'] == 0].copy()
     red_team = players_df[players_df['Win'] == 1].copy()
     print("\nBLUE TEAM (set to losing team)")
-    print("-" * 100)
     print(f"{'Player':<20} {'Champion':<12} {'Lane':<8} {'KDA':<12} {'CS':<6} {'Gold':<7} {'Predicted Rank':<15}")
-    print("-" * 100)
-    
+
     for _, player in blue_team.iterrows():
         kda_str = f"{player['kills']}/{player['deaths']}/{player['assists']}"
         cs = int(player['MinionsKilled'])
@@ -265,9 +261,7 @@ def display_predictions(players_df):
               f"{kda_str:<12} {cs:<6} {gold:<7} {player['PredictedRank']:<15}")
     
     print("\nRED TEAM (set to winning team)")
-    print("-" * 100)
     print(f"{'Player':<20} {'Champion':<12} {'Lane':<8} {'KDA':<12} {'CS':<6} {'Gold':<7} {'Predicted Rank':<15}")
-    print("-" * 100)
     
     for _, player in red_team.iterrows():
         kda_str = f"{player['kills']}/{player['deaths']}/{player['assists']}"
@@ -279,12 +273,10 @@ def display_predictions(players_df):
               f"{kda_str:<12} {cs:<6} {gold:<7} {player['PredictedRank']:<15}")
     
     # display predictions
-    print("\n" + "=" * 100)
-    print("RANK DISTRIBUTION")
-    print("=" * 100)
+    print("Rank distribution:")
     rank_counts = players_df['PredictedRank'].value_counts().sort_index()
     for rank, count in rank_counts.items():
-        print(f"  {rank:<15}: {count} player(s)")
+        print(f"  {rank:}: {count} player(s)")
     
     avg_rank_id = players_df['PredictedRankId'].mean()
     avg_rank = RANKS[int(round(avg_rank_id))]
