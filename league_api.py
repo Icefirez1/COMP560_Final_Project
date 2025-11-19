@@ -1,14 +1,27 @@
 import requests
 import os
 import pandas as pd
+import pickle
 from dotenv import load_dotenv
 
 # Load the specific environment file
-load_dotenv('keys.env.local')
+load_dotenv('.env.local')
 
 API_KEY = os.getenv("LEAGUE_API_KEY")
 print(f"✓ API Key loaded: {API_KEY[:10]}..." if API_KEY else "✗ API Key not found!")
 REGION_ROUTING = "americas"   # americas / europe / asia
+
+# Load the trained model and rank labels
+MODEL = None
+RANKS = ["Unranked", "Iron", "Bronze", "Silver", "Gold", "Platinum", 
+         "Emerald", "Diamond", "Master", "Grandmaster", "Challenger"]
+
+def load_model():
+    """Load the trained model (lazy loading)"""
+    global MODEL
+    if MODEL is None:
+        MODEL = pickle.load(open("models/vanilla_tree.sav", "rb"))
+    return MODEL
 
 # Encoding mappings for categorical variables (consistent with training data)
 # These MUST match the exact order from pd.factorize() during training!
@@ -43,12 +56,12 @@ GAME_PHASE_ENCODING = {
 def get_match_data(match_id):
     """Fetch match data from Riot API"""
     match_url = f"https://{REGION_ROUTING}.api.riotgames.com/lol/match/v5/matches/{match_id}"
-
+    
     response = requests.get(
         match_url,
         headers={"X-Riot-Token": API_KEY}
     )
-
+    
     if response.status_code == 200:
         return response.json()
     else:
@@ -220,55 +233,152 @@ def get_player_stats_from_match(match_id, username):
     return player_df
 
 
-# Example usage
-if __name__ == "__main__":
-    match_id = "NA1_5404818015"
-    target_player = "coolkaw"  # Change this to the player you want to analyze
+def predict_all_players(match_id):
+    """
+    Predict ranks for all 10 players in a match.
     
-    print("=" * 80)
-    print("OPTION 1: Get specific player stats")
-    print("=" * 80)
+    Args:
+        match_id: The match ID (e.g., "NA1_5404818015")
     
-    player_stats = get_player_stats_from_match(match_id, target_player)
-    
-    if player_stats is not None and not player_stats.empty:
-        print(f"\n✓ Stats retrieved for player: {target_player}")
-        print(f"  Champion: {player_stats['championName'].values[0]}")
-        print(f"  KDA: {player_stats['kills'].values[0]}/{player_stats['deaths'].values[0]}/{player_stats['assists'].values[0]}")
-        print(f"  Win: {'Yes' if player_stats['Win'].values[0] == 1 else 'No'}")
-        print(f"  Gold/Min: {player_stats['GoldPerMin'].values[0]:.1f}")
-        print(f"  CS/Min: {player_stats['CSPerMin'].values[0]:.1f}")
-        print(f"  Lane: {player_stats['Lane'].values[0]} (encoded)")
-        print(f"  Role: {player_stats['Role'].values[0]} (encoded)")
-        
-        # Save individual player stats for model
-        output_file = f'data/{target_player}_stats.csv'
-        model_df = prepare_for_model(player_stats)
-        model_df.to_csv(output_file, index=False)
-        print(f"\n✓ Player data saved to {output_file}")
-        print(f"  Ready for rank prediction!")
-    
-    print("\n" + "=" * 80)
-    print("OPTION 2: Get all players from match")
-    print("=" * 80)
-    
+    Returns:
+        DataFrame with player info and predictions
+    """
+    # Get match data
     match_data = get_match_data(match_id)
     
-    if match_data:
-        print(f"\n✓ Match data retrieved successfully!")
-        print(f"  Game Duration: {match_data['info']['gameDuration'] // 60} minutes")
-        print(f"  Game Mode: {match_data['info']['gameMode']}\n")
+    if not match_data:
+        return None
+    
+    # Extract all player stats
+    all_players = extract_player_stats(match_data)
+    
+    if all_players.empty:
+        return None
+    
+    # Prepare features for model
+    model_features = prepare_for_model(all_players)
+    
+    # Load model and make predictions
+    model = load_model()
+    predictions = model.predict(model_features)
+    predicted_ranks = [RANKS[pred] for pred in predictions]
+    
+    # Add predictions to dataframe
+    all_players['PredictedRank'] = predicted_ranks
+    all_players['PredictedRankId'] = predictions
+    
+    return all_players
+
+
+def display_predictions(players_df):
+    """
+    Display predictions in a nicely formatted table.
+    
+    Args:
+        players_df: DataFrame with player stats and predictions
+    """
+    if players_df is None or players_df.empty:
+        return
+    
+    print("\n" + "=" * 100)
+    print("RANK PREDICTIONS FOR ALL PLAYERS")
+    print("=" * 100)
+    
+    # Separate by team
+    blue_team = players_df[players_df['Win'] == 0].copy()
+    red_team = players_df[players_df['Win'] == 1].copy()
+    
+    # Display Blue Team
+    print("\n🔵 BLUE TEAM (Lost)")
+    print("-" * 100)
+    print(f"{'Player':<20} {'Champion':<12} {'Lane':<8} {'KDA':<12} {'CS':<6} {'Gold':<7} {'Predicted Rank':<15}")
+    print("-" * 100)
+    
+    for _, player in blue_team.iterrows():
+        kda_str = f"{player['kills']}/{player['deaths']}/{player['assists']}"
+        cs = int(player['MinionsKilled'])
+        gold = f"{player['TotalGold']/1000:.1f}k"
+        lane_name = get_lane_name(player['Lane'])
         
-        # Extract all player stats
-        all_players_df = extract_player_stats(match_data)
+        print(f"{player['summonerName']:<20} {player['championName']:<12} {lane_name:<8} "
+              f"{kda_str:<12} {cs:<6} {gold:<7} {player['PredictedRank']:<15}")
+    
+    # Display Red Team
+    print("\n🔴 RED TEAM (Won)")
+    print("-" * 100)
+    print(f"{'Player':<20} {'Champion':<12} {'Lane':<8} {'KDA':<12} {'CS':<6} {'Gold':<7} {'Predicted Rank':<15}")
+    print("-" * 100)
+    
+    for _, player in red_team.iterrows():
+        kda_str = f"{player['kills']}/{player['deaths']}/{player['assists']}"
+        cs = int(player['MinionsKilled'])
+        gold = f"{player['TotalGold']/1000:.1f}k"
+        lane_name = get_lane_name(player['Lane'])
         
-        print("All Player Statistics:")
-        print("-" * 80)
-        print(all_players_df[['summonerName', 'championName', 'kills', 'deaths', 'assists', 'Win', 'KDA']].to_string(index=False))
+        print(f"{player['summonerName']:<20} {player['championName']:<12} {lane_name:<8} "
+              f"{kda_str:<12} {cs:<6} {gold:<7} {player['PredictedRank']:<15}")
+    
+    # Summary statistics
+    print("\n" + "=" * 100)
+    print("RANK DISTRIBUTION")
+    print("=" * 100)
+    rank_counts = players_df['PredictedRank'].value_counts().sort_index()
+    for rank, count in rank_counts.items():
+        print(f"  {rank:<15}: {count} player(s)")
+    
+    avg_rank_id = players_df['PredictedRankId'].mean()
+    avg_rank = RANKS[int(round(avg_rank_id))]
+    print(f"\n  Average Rank: {avg_rank} (≈{avg_rank_id:.2f})")
+
+
+def get_lane_name(lane_code):
+    """Convert lane code back to readable name"""
+    lane_map = {0: 'BOTTOM', 1: 'SUPPORT', 2: 'NONE', 3: 'JUNGLE', 4: 'TOP', 5: 'MIDDLE'}
+    return lane_map.get(int(lane_code), 'UNKNOWN')
+
+
+def save_predictions(players_df, filename='match_predictions.csv'):
+    """
+    Save predictions to CSV file.
+    
+    Args:
+        players_df: DataFrame with player stats and predictions
+        filename: Output filename (default: 'match_predictions.csv')
+    """
+    if players_df is None or players_df.empty:
+        return
+    
+    # Select relevant columns
+    output_df = players_df[[
+        'summonerName', 'championName', 'kills', 'deaths', 'assists',
+        'MinionsKilled', 'TotalGold', 'Win', 'KDA', 'PredictedRank', 'PredictedRankId'
+    ]].copy()
+    
+    output_df.to_csv(filename, index=False)
+    print(f"\n✓ Predictions saved to: {filename}")
+
+
+# Example usage
+if __name__ == "__main__":
+    match_id = "NA1_5416214402"
+    
+    print("=" * 100)
+    print("LEAGUE OF LEGENDS RANK PREDICTOR")
+    print("=" * 100)
+    
+    # Predict ranks for all players
+    print(f"\nFetching match data for: {match_id}")
+    results = predict_all_players(match_id)
+    
+    if results is not None:
+        # Display results
+        display_predictions(results)
         
-        # Save to CSV (model-ready format)
-        output_file = 'data/fetched_match_data.csv'
-        model_df = prepare_for_model(all_players_df)
-        model_df.to_csv(output_file, index=False)
-        print(f"\n✓ All match data saved to {output_file}")
-        print(f"  {len(model_df)} players | {len(model_df.columns)} features (model-ready)")
+        # Save to file
+        save_predictions(results, 'data/match_predictions.csv')
+        
+        print("\n" + "=" * 100)
+        print("✓ Analysis complete!")
+        print("=" * 100)
+    else:
+        print("❌ Failed to fetch or process match data")
