@@ -1,2 +1,3 @@
 models/*
 .env.local/*
+!models/vanilla_tree.sav
