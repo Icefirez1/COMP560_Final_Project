@@ -8,7 +8,6 @@ from dotenv import load_dotenv
 load_dotenv('.env.local')
 
 API_KEY = os.getenv("LEAGUE_API_KEY")
-print(f"loaded api key: {API_KEY[:10]}..." if API_KEY else "no api key detected :(")
 REGION_ROUTING = "americas"   # switch between americas / europe / asia
 
 # load the trained model and preset rank labels
@@ -180,6 +179,29 @@ def prepare_for_model(df):
     return df[model_columns].copy()
 
 
+def add_rank_predictions(players_df):
+    """
+    Attach model rank predictions to a player stats DataFrame.
+    
+    Args:
+        players_df: Output of extract_player_stats()
+    
+    Returns:
+        DataFrame with PredictedRank and PredictedRankId columns
+    """
+    if players_df is None or players_df.empty:
+        return None
+    
+    model_features = prepare_for_model(players_df)
+    model = load_model()
+    predictions = model.predict(model_features)
+    
+    with_predictions = players_df.copy()
+    with_predictions['PredictedRankId'] = predictions
+    with_predictions['PredictedRank'] = [RANKS[int(pred)] for pred in predictions]
+    return with_predictions
+
+
 def get_player_stats_from_match(match_id, username):
     """
     Fetch a specific player's stats from a match.
@@ -224,14 +246,85 @@ def predict_all_players(match_id):
     if all_players.empty:
         return None
     
-    model_features = prepare_for_model(all_players)
-    model = load_model()
-    predictions = model.predict(model_features)
-    predicted_ranks = [RANKS[pred] for pred in predictions]
-    all_players['PredictedRank'] = predicted_ranks
-    all_players['PredictedRankId'] = predictions
+    return add_rank_predictions(all_players)
+
+
+def prepare_prediction_summary(players_df):
+    """
+    Prepare team tables and summary metrics for UI (e.g., Streamlit).
     
-    return all_players
+    Args:
+        players_df: DataFrame with predictions (from predict_all_players)
+    
+    Returns:
+        Dictionary with team tables, rank distribution, and average rank info
+    """
+    if players_df is None or players_df.empty:
+        return None
+    
+    if 'PredictedRank' not in players_df.columns:
+        raise ValueError("Players DataFrame must include predictions. Call add_rank_predictions first.")
+    
+    summary_df = players_df.copy()
+    summary_df['LaneName'] = summary_df['Lane'].apply(get_lane_name)
+    summary_df['KDAString'] = summary_df.apply(
+        lambda row: f"{row['kills']}/{row['deaths']}/{row['assists']}", axis=1
+    )
+    summary_df['CS'] = summary_df['MinionsKilled'].astype(int)
+    summary_df['GoldDisplay'] = summary_df['TotalGold'].apply(lambda gold: f"{gold / 1000:.1f}k")
+    
+    display_cols = [
+        'summonerName', 'championName', 'LaneName', 'KDAString',
+        'CS', 'GoldDisplay', 'PredictedRank'
+    ]
+    rename_map = {
+        'summonerName': 'Player',
+        'championName': 'Champion',
+        'LaneName': 'Lane',
+        'KDAString': 'KDA',
+        'CS': 'CS',
+        'GoldDisplay': 'Gold',
+        'PredictedRank': 'Predicted Rank'
+    }
+    
+    blue_team = summary_df[summary_df['Win'] == 0][display_cols].rename(columns=rename_map).reset_index(drop=True)
+    red_team = summary_df[summary_df['Win'] == 1][display_cols].rename(columns=rename_map).reset_index(drop=True)
+    
+    rank_counts_series = summary_df['PredictedRank'].value_counts()
+    rank_counts = {
+        rank: int(rank_counts_series.get(rank, 0))
+        for rank in RANKS
+        if rank_counts_series.get(rank, 0)
+    }
+    
+    avg_rank_id = float(summary_df['PredictedRankId'].mean())
+    avg_rank_id_for_label = max(0, min(len(RANKS) - 1, round(avg_rank_id)))
+    avg_rank = RANKS[int(avg_rank_id_for_label)]
+    
+    return {
+        'blue_team': blue_team,
+        'red_team': red_team,
+        'rank_counts': rank_counts,
+        'average_rank_id': avg_rank_id,
+        'average_rank': avg_rank,
+        'players': summary_df
+    }
+
+
+def get_match_prediction_summary(match_id):
+    """
+    Convenience helper to fetch a match, compute predictions, and prepare UI data.
+    
+    Args:
+        match_id: The match ID (e.g., "NA1_5404818015")
+    
+    Returns:
+        Dictionary from prepare_prediction_summary() or None on failure.
+    """
+    players_df = predict_all_players(match_id)
+    if players_df is None:
+        return None
+    return prepare_prediction_summary(players_df)
 
 
 def display_predictions(players_df):
@@ -244,43 +337,27 @@ def display_predictions(players_df):
     if players_df is None or players_df.empty:
         return
     
+    summary = prepare_prediction_summary(players_df)
+    if summary is None:
+        return
+    
     print("Player Rank Predictions:")
     
-    blue_team = players_df[players_df['Win'] == 0].copy()
-    red_team = players_df[players_df['Win'] == 1].copy()
-    print("\nBLUE TEAM (set to losing team)")
-    print(f"{'Player':<20} {'Champion':<12} {'Lane':<8} {'KDA':<12} {'CS':<6} {'Gold':<7} {'Predicted Rank':<15}")
-
-    for _, player in blue_team.iterrows():
-        kda_str = f"{player['kills']}/{player['deaths']}/{player['assists']}"
-        cs = int(player['MinionsKilled'])
-        gold = f"{player['TotalGold']/1000:.1f}k"
-        lane_name = get_lane_name(player['Lane'])
-        
-        print(f"{player['summonerName']:<20} {player['championName']:<12} {lane_name:<8} "
-              f"{kda_str:<12} {cs:<6} {gold:<7} {player['PredictedRank']:<15}")
+    def _print_team(label, team_df):
+        print(f"\n{label}")
+        print(f"{'Player':<20} {'Champion':<12} {'Lane':<8} {'KDA':<12} {'CS':<6} {'Gold':<7} {'Predicted Rank':<15}")
+        for _, row in team_df.iterrows():
+            print(f"{row['Player']:<20} {row['Champion']:<12} {row['Lane']:<8} "
+                  f"{row['KDA']:<12} {row['CS']:<6} {row['Gold']:<7} {row['Predicted Rank']:<15}")
     
-    print("\nRED TEAM (set to winning team)")
-    print(f"{'Player':<20} {'Champion':<12} {'Lane':<8} {'KDA':<12} {'CS':<6} {'Gold':<7} {'Predicted Rank':<15}")
+    _print_team("BLUE TEAM (set to losing team)", summary['blue_team'])
+    _print_team("RED TEAM (set to winning team)", summary['red_team'])
     
-    for _, player in red_team.iterrows():
-        kda_str = f"{player['kills']}/{player['deaths']}/{player['assists']}"
-        cs = int(player['MinionsKilled'])
-        gold = f"{player['TotalGold']/1000:.1f}k"
-        lane_name = get_lane_name(player['Lane'])
-        
-        print(f"{player['summonerName']:<20} {player['championName']:<12} {lane_name:<8} "
-              f"{kda_str:<12} {cs:<6} {gold:<7} {player['PredictedRank']:<15}")
+    print("\nRank distribution:")
+    for rank, count in summary['rank_counts'].items():
+        print(f"  {rank}: {count} player(s)")
     
-    # display predictions
-    print("Rank distribution:")
-    rank_counts = players_df['PredictedRank'].value_counts().sort_index()
-    for rank, count in rank_counts.items():
-        print(f"  {rank:}: {count} player(s)")
-    
-    avg_rank_id = players_df['PredictedRankId'].mean()
-    avg_rank = RANKS[int(round(avg_rank_id))]
-    print(f"\n  Average Rank: {avg_rank} (≈{avg_rank_id:.2f})")
+    print(f"\n  Average Rank: {summary['average_rank']} (≈{summary['average_rank_id']:.2f})")
 
 
 def get_lane_name(lane_code):
